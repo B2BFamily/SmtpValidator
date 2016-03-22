@@ -9,27 +9,50 @@ namespace B2BFamily.SmtpValidation.Lib.SmtpConnector {
     internal class SmtpConnectorWithSsl : SmtpConnectorBase {
         private SslStream _sslStream = null;
         private TcpClient _client = null;
+        /// <summary>
+        /// Таймаут подклчюения в секундах
+        /// </summary>
+        private const byte CONNECT_TIMEOUT = 2;
+        private IAsyncResult _connectionResult = null;
 
         public SmtpConnectorWithSsl(string smtpServerAddress, int port) : base(smtpServerAddress, port) {
-            TcpClient client = new TcpClient(smtpServerAddress, port);
+            try {
+                _client = new TcpClient();
+                _connectionResult = _client.BeginConnect(smtpServerAddress, port, null, null);
 
-            _sslStream = new SslStream(
-                client.GetStream(),
-                false,
-                new RemoteCertificateValidationCallback(ValidateServerCertificate),
-                null
-                );
-            // The server name must match the name on the server certificate.
+                var success = _connectionResult.AsyncWaitHandle.WaitOne(TimeSpan.FromSeconds(CONNECT_TIMEOUT));
+
+                if (!success) {
+                    _client = null;
+                    _sslStream = null;
+                    return;
+                }
+
+                _sslStream = new SslStream(
+                    _client.GetStream(),
+                    false,
+                    new RemoteCertificateValidationCallback(ValidateServerCertificate),
+                    null
+                    );
+                // The server name must match the name on the server certificate.
+            } catch {
+                //Timeout excepted
+                _client = null;
+                _sslStream = null;
+                return;
+            }
             try {
                 _sslStream.AuthenticateAsClient(smtpServerAddress);
             } catch (AuthenticationException e) {
-                _sslStream = null;
                 Console.WriteLine("Exception: {0}", e.Message);
                 if (e.InnerException != null) {
                     Console.WriteLine("Inner exception: {0}", e.InnerException.Message);
                 }
                 Console.WriteLine("Authentication failed - closing the connection.");
-                client.Close();
+                _client.Close();
+
+                _client = null;
+                _sslStream = null;
             }
         }
 
@@ -46,6 +69,8 @@ namespace B2BFamily.SmtpValidation.Lib.SmtpConnector {
 
             try {
                 if (_client != null) {
+                    // we have connected
+                    _client.EndConnect(_connectionResult);
                     _client.Close();
                     _client = null;
                 }
@@ -82,6 +107,9 @@ namespace B2BFamily.SmtpValidation.Lib.SmtpConnector {
         }
 
         public override void SendData(string data) {
+            if (_client == null || _sslStream == null) {
+                return;
+            }
             byte[] messsage = Encoding.UTF8.GetBytes(data);
             // Send hello message to the server. 
             _sslStream.Write(messsage);
